@@ -19,7 +19,7 @@ os.makedirs(output_dir, exist_ok=True)
 # -------------------- 标签定义 --------------------
 labels = [
     "table", "chair", "sofa", "bookshelf", "television", "bed", "dining table",
-    "desk", "cupboard", "office chair", "armchair", "leather sofa", "lamp",
+    "desk", "cupboard", "office chair", "armchair", "leather sofa",
     "cabinet", "refrigerator", "drawer", "wardrobe", "couch", "television stand",
     "nightstand", "mirror"
 ]
@@ -44,10 +44,12 @@ def run_sam(rgb, sam_checkpoint, model_type="vit_h", device="cuda"):
     masks = mask_generator.generate(rgb)
     return masks
 
-def merge_masks(masks, image_shape, iou_threshold=0.3, min_area_ratio=0.01,
-                max_area_ratio=0.8, confidence_threshold=0.5):
+def merge_masks(masks, image_shape, iou_threshold=0.3, containment_threshold=0.9,
+                min_area_ratio=0.01, max_area_ratio=0.8, confidence_threshold=0.5):
     image_area = image_shape[0] * image_shape[1]
-    valid_masks = []
+    filtered_masks = []
+
+    # Step 1: 过滤掉面积过小 / 过大 / iou 太低的 mask
     for m in masks:
         seg = m['segmentation'].astype(bool)
         area_ratio = seg.sum() / image_area
@@ -55,8 +57,39 @@ def merge_masks(masks, image_shape, iou_threshold=0.3, min_area_ratio=0.01,
             continue
         if 'predicted_iou' in m and m['predicted_iou'] < confidence_threshold:
             continue
-        valid_masks.append(seg)
-    return valid_masks
+        filtered_masks.append(seg)
+
+    # Step 2: 根据 IoU 和包含率进行融合
+    merged = []
+    used = set()
+
+    for i in range(len(filtered_masks)):
+        if i in used:
+            continue
+        current = filtered_masks[i]
+        to_merge = [current]
+
+        for j in range(i + 1, len(filtered_masks)):
+            if j in used:
+                continue
+            candidate = filtered_masks[j]
+
+            intersection = np.logical_and(current, candidate).sum()
+            union = np.logical_or(current, candidate).sum()
+            if union == 0:
+                continue
+
+            iou = intersection / union
+            containment = max(intersection / current.sum(), intersection / candidate.sum())
+
+            if iou > iou_threshold or containment > containment_threshold:
+                to_merge.append(candidate)
+                used.add(j)
+
+        merged_mask = np.any(to_merge, axis=0)
+        merged.append(merged_mask)
+
+    return merged
 
 def generate_pointcloud_from_mask(rgb, depth, mask, intrinsic, extrinsic):
     # 注意：depth 是 float32 的 OpenGL 深度值，范围 [0, 1]
@@ -139,7 +172,7 @@ def main():
     label_to_scores = {}
 
     for i, mask in enumerate(merged_masks):
-        transparent_path = os.path.join(output_dir, f"object_{i:02d}_transparent.png")
+        transparent_path = os.path.join(output_dir, f"temp_object_{i:02d}_transparent.png")
         save_transparent_image(rgb, mask, transparent_path)
 
         label, score = classify_image(transparent_path, labels, clip_model, preprocess, device)
@@ -151,26 +184,34 @@ def main():
         label_to_masks[label].append(mask)
         label_to_scores[label].append(score)
 
-        # 原始透明图 & 点云输出
-        pcd = generate_pointcloud_from_mask(rgb, depth, mask, intrinsic, extrinsic)
-        o3d.io.write_point_cloud(os.path.join(output_dir, f"object_{i:02d}_{label}.pcd"), pcd)
+        os.remove(transparent_path)  # 删除临时透明图
 
     # ------ 合并同类 mask 并分类 ------
     for label, masks_list in label_to_masks.items():
-        if len(masks_list) < 2:
-            continue  # 不合并只有一个的类
+        if len(masks_list) >= 2:
+            # 有多个 mask，尝试融合
+            combined_mask = np.any(np.stack(masks_list), axis=0)
+            combined_path = os.path.join(output_dir, f"fused_{label}.png")
+            save_transparent_image(rgb, combined_mask, combined_path)
 
-        combined_mask = np.any(np.stack(masks_list), axis=0)
-        combined_path = os.path.join(output_dir, f"fused_{label}.png")
-        save_transparent_image(rgb, combined_mask, combined_path)
+            fused_label, fused_score = classify_image(combined_path, labels, clip_model, preprocess, device)
+            original_avg_score = np.mean(label_to_scores[label])
+            print(f"[融合] {label}: {fused_label} ({fused_score:.4f}) vs 原始平均得分 {original_avg_score:.4f})")
 
-        fused_label, fused_score = classify_image(combined_path, labels, clip_model, preprocess, device)
-        original_avg_score = np.mean(label_to_scores[label])
-        print(f"[融合] {label}: {fused_label} ({fused_score:.4f}) vs 原始平均得分 {original_avg_score:.4f}")
+            if fused_score > original_avg_score and fused_label == label:
+                print(f"✅ 使用融合后的 mask 输出 {label}")
+                pcd = generate_pointcloud_from_mask(rgb, depth, combined_mask, intrinsic, extrinsic)
+                o3d.io.write_point_cloud(os.path.join(output_dir, f"fused_{label}.pcd"), pcd)
+            else:
+                print(f"⚠️ 融合效果不佳，跳过 {label}")
+        else:
+            # 只有一个 mask，不融合也要输出
+            mask = masks_list[0]
+            combined_path = os.path.join(output_dir, f"fused_{label}.png")
+            save_transparent_image(rgb, mask, combined_path)
 
-        if fused_score > original_avg_score and fused_label == label:
-            print(f"✅ 使用融合后的 mask 替换 {label}")
-            pcd = generate_pointcloud_from_mask(rgb, depth, combined_mask, intrinsic, extrinsic)
+            print(f"[无融合] 输出 {label}")
+            pcd = generate_pointcloud_from_mask(rgb, depth, mask, intrinsic, extrinsic)
             o3d.io.write_point_cloud(os.path.join(output_dir, f"fused_{label}.pcd"), pcd)
 
 if __name__ == "__main__":
