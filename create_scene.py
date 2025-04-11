@@ -3,8 +3,8 @@ import numpy as np
 
 def create_scene():
     # 文件路径
-    table_path = "D:/NBV/nbv_simulation/data/table.obj"
-    chair_path = "D:/NBV/nbv_simulation/data/chair.obj"
+    table_path = "D:/NBV/nbv_simulation/data/table_001.obj"
+    chair_path = "D:/NBV/nbv_simulation/data/armchair_001.obj"
 
     # 加载模型
     table_mesh = o3d.io.read_triangle_mesh(table_path)
