@@ -2,6 +2,7 @@ import os
 import open3d as o3d
 import pickle
 import numpy as np
+import pymeshlab
 from collections import defaultdict
 
 
@@ -20,6 +21,14 @@ def dict_to_pointcloud(pcd_dict):
     if pcd_dict["colors"] is not None:
         pcd.colors = o3d.utility.Vector3dVector(pcd_dict["colors"])
     return pcd
+
+def triangulate_with_meshlab(obj_path):
+    ms = pymeshlab.MeshSet()
+    ms.load_new_mesh(obj_path)
+    ms.apply_filter("triangulate_all_faces")
+    temp_path = obj_path.replace(".obj", "_tri.obj")
+    ms.save_current_mesh(temp_path, save_vertex_color=True)
+    return temp_path
 
 def load_obj_models_with_labels(folder_path="D:/NBV/nbv_simulation/data", sample_points=2048):
     cache_path = os.path.join(folder_path, "furniture_library.pkl")
@@ -51,9 +60,19 @@ def load_obj_models_with_labels(folder_path="D:/NBV/nbv_simulation/data", sample
             full_path = os.path.join(folder_path, fname)
 
             mesh = o3d.io.read_triangle_mesh(full_path)
-            if mesh.is_empty():
-                print(f"[警告] 读取失败或为空模型：{fname}")
-                continue
+            if mesh.is_empty() or len(mesh.triangles) == 0:
+                print(f"[提示] 模型 {fname} 为空或未三角化，尝试使用 MeshLab 进行三角化...")
+                try:
+                    tri_path = triangulate_with_meshlab(full_path)
+                    mesh = o3d.io.read_triangle_mesh(tri_path)
+                    if mesh.is_empty() or len(mesh.triangles) == 0:
+                        print(f"[失败] 三角化失败或加载失败：{tri_path}")
+                        continue
+                    else:
+                        print(f"[成功] 三角化并加载：{tri_path}")
+                except Exception as e:
+                    print(f"[错误] 三角化过程中出错：{fname} → {e}")
+                    continue
 
             if not mesh.has_vertex_normals():
                 mesh.compute_vertex_normals()
@@ -90,6 +109,7 @@ def load_obj_models_with_labels(folder_path="D:/NBV/nbv_simulation/data", sample
 
     print(f"📚 当前标签数: {len(model_dict)}, 总模型数: {sum(len(v) for v in model_dict.values())}")
     return model_dict
+
     
 if __name__ == "__main__":
-    load_obj_models_with_labels(folder_path="D:/NBV/nbv_simulation/data", sample_points=2048)
+    load_obj_models_with_labels()
