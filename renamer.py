@@ -1,6 +1,6 @@
 import os
 
-def batch_rename_obj_files(folder, prefix="cabinet"):
+def batch_rename_obj_files(folder, prefix="cabinet_"):
     for filename in os.listdir(folder):
         if filename.endswith(".obj") and not filename.startswith(prefix):
             old_path = os.path.join(folder, filename)

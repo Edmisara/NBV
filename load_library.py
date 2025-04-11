@@ -1,115 +1,59 @@
 import os
-import open3d as o3d
 import pickle
-import numpy as np
-import pymeshlab
+import open3d as o3d
 from collections import defaultdict
 
+# ==== 路径设置 ====
+obj_folder = "D:/NBV/nbv_simulation/data"
+save_pcd_folder = os.path.join(obj_folder, "pcd")
+os.makedirs(save_pcd_folder, exist_ok=True)
 
-def parse_label_from_filename(filename):
-    return filename.split("_")[0]
+library_output_path = os.path.join(obj_folder, "furniture_library.pkl")
+labels_txt_path = os.path.join(obj_folder, "labels.txt")
 
-def pointcloud_to_dict(pcd):
-    return {
-        "points": np.asarray(pcd.points),
-        "colors": np.asarray(pcd.colors) if pcd.has_colors() else None
-    }
+# ==== 采样函数（带兜底） ====
+def safe_sample_mesh(mesh, num_points=2048):
+    if not mesh.has_triangle_normals():
+        mesh.compute_triangle_normals()
+    if not mesh.has_vertex_normals():
+        mesh.compute_vertex_normals()
 
-def dict_to_pointcloud(pcd_dict):
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(pcd_dict["points"])
-    if pcd_dict["colors"] is not None:
-        pcd.colors = o3d.utility.Vector3dVector(pcd_dict["colors"])
+    try:
+        pcd = mesh.sample_points_poisson_disk(number_of_points=num_points)
+    except:
+        print("⚠️ Poisson 采样失败，尝试 Uniform 采样")
+        pcd = mesh.sample_points_uniformly(number_of_points=num_points)
+
     return pcd
 
-def triangulate_with_meshlab(obj_path):
-    ms = pymeshlab.MeshSet()
-    ms.load_new_mesh(obj_path)
-    ms.apply_filter("triangulate_all_faces")
-    temp_path = obj_path.replace(".obj", "_tri.obj")
-    ms.save_current_mesh(temp_path, save_vertex_color=True)
-    return temp_path
+# ==== 主逻辑 ====
+model_dict = defaultdict(list)
 
-def load_obj_models_with_labels(folder_path="D:/NBV/nbv_simulation/data", sample_points=2048):
-    cache_path = os.path.join(folder_path, "furniture_library.pkl")
-    tag_list_path = os.path.join(folder_path, "furniture_labels.txt")
-    record_path = os.path.join(folder_path, "loaded_files.txt")
+for fname in os.listdir(obj_folder):
+    if not fname.endswith(".obj"):
+        continue
+    label = fname.split("_")[0]
+    obj_path = os.path.join(obj_folder, fname)
+    mesh = o3d.io.read_triangle_mesh(obj_path)
+    if not mesh.has_triangles():
+        print(f"[跳过] {fname} 无有效三角面")
+        continue
 
-    loaded_files = set()
-    if os.path.exists(record_path):
-        with open(record_path, "r") as f:
-            loaded_files = set(line.strip() for line in f if line.strip())
+    pcd = safe_sample_mesh(mesh)
+    if len(pcd.points) == 0:
+        print(f"[跳过] {fname} 采样失败，无点云")
+        continue
 
-    if os.path.exists(cache_path):
-        print(f"📦 从缓存加载模型库: {cache_path}")
-        with open(cache_path, "rb") as f:
-            serializable_dict = pickle.load(f)
-            model_dict = {
-                label: [(fname, dict_to_pointcloud(pcd_dict)) for fname, pcd_dict in models]
-                for label, models in serializable_dict.items()
-            }
-    else:
-        model_dict = defaultdict(list)
+    # 保存 .pcd
+    pcd_filename = fname.replace(".obj", ".pcd")
+    pcd_path = os.path.join(save_pcd_folder, pcd_filename)
+    o3d.io.write_point_cloud(pcd_path, pcd)
 
-    updated = False
-    current_loaded = set()
+    # 加入模型字典（保存路径而非点云对象）
+    model_dict[label].append((fname, pcd_path))
+    print(f"✅ 已处理并保存: {fname} → {pcd_filename}")
 
-    for fname in os.listdir(folder_path):
-        if fname.endswith(".obj") and fname not in loaded_files:
-            label = parse_label_from_filename(fname)
-            full_path = os.path.join(folder_path, fname)
-
-            mesh = o3d.io.read_triangle_mesh(full_path)
-            if mesh.is_empty() or len(mesh.triangles) == 0:
-                print(f"[提示] 模型 {fname} 为空或未三角化，尝试使用 MeshLab 进行三角化...")
-                try:
-                    tri_path = triangulate_with_meshlab(full_path)
-                    mesh = o3d.io.read_triangle_mesh(tri_path)
-                    if mesh.is_empty() or len(mesh.triangles) == 0:
-                        print(f"[失败] 三角化失败或加载失败：{tri_path}")
-                        continue
-                    else:
-                        print(f"[成功] 三角化并加载：{tri_path}")
-                except Exception as e:
-                    print(f"[错误] 三角化过程中出错：{fname} → {e}")
-                    continue
-
-            if not mesh.has_vertex_normals():
-                mesh.compute_vertex_normals()
-
-            try:
-                pcd = mesh.sample_points_poisson_disk(sample_points)
-                model_dict[label].append((fname, pcd))
-                current_loaded.add(fname)
-                updated = True
-                print(f"✅ 已加载模型: {fname}")
-            except Exception as e:
-                print(f"[错误] 采样失败：{fname} → {e}")
-
-    if updated:
-        print(f"💾 正在保存更新后的模型库至: {cache_path}")
-        serializable_dict = {
-            label: [(fname, pointcloud_to_dict(pcd)) for fname, pcd in models]
-            for label, models in model_dict.items()
-        }
-        with open(cache_path, "wb") as f:
-            pickle.dump(serializable_dict, f)
-
-        with open(tag_list_path, "w") as f:
-            for label in sorted(model_dict.keys()):
-                f.write(label + "\n")
-        print(f"🏷️ 标签列表已保存至: {tag_list_path}")
-
-        with open(record_path, "a") as f:
-            for fname in current_loaded:
-                f.write(fname + "\n")
-        print(f"📝 加载记录已更新: {record_path}")
-    else:
-        print("⚠️ 没有新模型被加载。")
-
-    print(f"📚 当前标签数: {len(model_dict)}, 总模型数: {sum(len(v) for v in model_dict.values())}")
-    return model_dict
-
-    
-if __name__ == "__main__":
-    load_obj_models_with_labels()
+# ==== 保存为新的 .pkl 库 ====
+with open(library_output_path, "wb") as f:
+    pickle.dump(model_dict, f)
+print("\n✅ 点云模型路径库已重新构建并保存为:", library_output_path)
