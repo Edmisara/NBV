@@ -11,12 +11,7 @@ def add_camera_button(vis, camera_position, camera_euler, scene):
     # 按钮回调函数
     def button_callback(vis):
         # 调用 save_image_from_camera 函数
-        save_image_from_camera(
-            vis,
-            camera_position,
-            camera_euler,
-            path="D:\\NBV\\nbv_simulation\\results"
-        )
+        save_image_from_camera(vis, path="D:/NBV/nbv_simulation/results")
         return False  # 关闭按钮的操作
 
     # 创建按钮
