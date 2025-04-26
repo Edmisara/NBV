@@ -25,6 +25,9 @@ def save_image_from_camera(vis, path="D:/NBV/nbv_simulation/results"):
     ])
     np.save(os.path.join(path, "intrinsic_matrix.npy"), intrinsic_matrix)
     np.save(os.path.join(path, "extrinsic_matrix.npy"), extrinsic)
+    
+    width, height = intrinsic.width, intrinsic.height
+    np.save(os.path.join(path, "shape.npy"), np.array([width, height]))
 
     print(f"✅ 相机参数已保存到 {path}")
 

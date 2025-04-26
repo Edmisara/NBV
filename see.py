@@ -1,30 +1,53 @@
-import open3d as o3d
 import numpy as np
+import open3d as o3d
 
 # === 文件路径 ===
-mesh_path = "D:/NBV/nbv_simulation/data/table_001.obj"
-fused_pcd_path = "D:/NBV/nbv_simulation/results/objects/fused_table.pcd"
+pcd_path = "D:/NBV/nbv_simulation/results/objects/fused_table.pcd"
+intrinsic_path = "D:/NBV/nbv_simulation/results/intrinsic_matrix.npy"
+extrinsic_path = "D:/NBV/nbv_simulation/results/extrinsic_matrix.npy"
 
-# === 加载 mesh 和点云 ===
-mesh = o3d.io.read_triangle_mesh(mesh_path)
-mesh.compute_vertex_normals()
-fused_pcd = o3d.io.read_point_cloud(fused_pcd_path)
+# === 加载点云 ===
+pcd = o3d.io.read_point_cloud(pcd_path)
 
-# === 应用最佳匹配变换 ===
-scale = 0.95
-dx, dy, dz = -150.0, -150.0, -150.0
+# OpenGL → Open3D 坐标变换（上下 + 前后翻转）
+flip_transform = np.array([
+    [1,  0,  0, 0],
+    [0, -1,  0, 0],
+    [0,  0, -1, 0],
+    [0,  0,  0, 1]
+])
+pcd.transform(flip_transform)
 
-mesh.scale(scale, center=mesh.get_center())
-mesh.translate((dx, dy, dz), relative=False)
+# 如果是毫米单位，转为米
+pcd.scale(0.001, center=(0, 0, 0))
+pcd.paint_uniform_color([0.5, 0.5, 0.5])  # 灰色
 
-# === 上色：mesh 蓝色，fused_pcd 绿色 ===
-mesh.paint_uniform_color([0.0, 0.6, 1.0])
-fused_pcd.paint_uniform_color([0.0, 1.0, 0.0])
+# === 加载相机参数 ===
+K = np.load(intrinsic_path)
+extrinsic = np.load(extrinsic_path)
 
-# === 可视化结果 ===
-o3d.visualization.draw_geometries(
-    [mesh, fused_pcd],
-    window_name="OBJ 与 Fused 点云对齐结果",
-    width=960,
-    height=720
-)
+# ✅ 使用实际截图尺寸
+width = 1389
+height = 768
+
+# === 构造内参对象 ===
+intrinsic = o3d.camera.PinholeCameraIntrinsic()
+intrinsic.set_intrinsics(width, height,
+                         fx=K[0, 0], fy=K[1, 1],
+                         cx=K[0, 2], cy=K[1, 2])
+
+# === 打包为相机参数对象 ===
+camera_param = o3d.camera.PinholeCameraParameters()
+camera_param.intrinsic = intrinsic
+camera_param.extrinsic = extrinsic
+
+# === 可视化窗口 ===
+vis = o3d.visualization.Visualizer()
+vis.create_window("Camera View Reproduction", width=width, height=height)
+vis.add_geometry(pcd)
+
+ctr = vis.get_view_control()
+ctr.convert_from_pinhole_camera_parameters(camera_param)
+
+vis.run()
+vis.destroy_window()
