@@ -8,6 +8,7 @@ from PIL import Image
 import clip
 from segment_anything import sam_model_registry, SamAutomaticMaskGenerator
 
+
 # -------------------- 路径设置 --------------------
 rgb_path = "D:/NBV/nbv_simulation/results/rgb.png"
 depth_path = "D:/NBV/nbv_simulation/results/depth_meter.npy"  # ✅ 修改为 .npy
@@ -109,6 +110,7 @@ def merge_masks(masks, image_shape, iou_threshold=0.3, containment_threshold=0.9
 
     return merged
 
+
 def save_pointcloud_as_ply(points, colors, filename):
     with open(filename, 'w') as f:
         f.write("ply\nformat ascii 1.0\n")
@@ -119,10 +121,11 @@ def save_pointcloud_as_ply(points, colors, filename):
         for p, c in zip(points, colors):
             f.write(f"{p[0]} {p[1]} {p[2]} {c[0]} {c[1]} {c[2]}\n")
 
+
 def generate_pointcloud_from_mask(rgb, depth, mask, cam_path):
     """
-    正确版：完整反投影 + 射线归一化 × 深度，掩码筛选。
-    保持空间连续性，防止球面扭曲，保持相机坐标轴对齐。
+    使用逐像素for循环反投影（与cloud.ply生成方法完全一致），
+    并应用mask筛选有效点。
     """
     height, width = depth.shape
 
@@ -132,38 +135,43 @@ def generate_pointcloud_from_mask(rgb, depth, mask, cam_path):
 
     intrinsic = cam["intrinsic"]
     fx, fy, cx, cy = intrinsic["fx"], intrinsic["fy"], intrinsic["cx"], intrinsic["cy"]
-    extrinsic = np.array(cam["extrinsic"], dtype=np.float32)
+    T_world2cam = np.array(cam["extrinsic"])
+    T_cam2world = np.linalg.inv(T_world2cam)
 
-    # === 先完整反投影全部像素 ===
-    i, j = np.meshgrid(np.arange(width), np.arange(height))  # (i是列x, j是行y)
+    points = []
+    colors = []
 
-    # 归一化射线方向
-    x = (i - cx) / fx
-    y = (j - cy) / fy
-    rays = np.stack((x, y, np.ones_like(x)), axis=-1)  # [H, W, 3]
-    rays /= np.linalg.norm(rays, axis=-1, keepdims=True)  # 单位化射线方向
+    for v in range(height):
+        for u in range(width):
+            z = depth[v, u]
+            if z == 0:
+                continue
+            if mask[v, u] == 0:
+                continue
 
-    Z = depth
-    points_cam = rays * Z[..., np.newaxis]  # [H, W, 3]
+            # ✅ 使用单位射线
+            x = (u - cx) / fx
+            y = -(v - cy) / fy
+            ray = np.array([x, y, -1.0])
+            ray /= np.linalg.norm(ray)
 
-    # 平铺成 [H*W, 3]，配合 mask 一起筛选
-    points_cam_flat = points_cam.reshape(-1, 3)
-    colors_flat = rgb.reshape(-1, 3)
-    masks_flat = mask.flatten()
-    depth_flat = Z.flatten()
+            point_cam = ray * z
 
-    # === 只筛选掩码内且深度有效的点 ===
-    valid_mask = (depth_flat > 0) & masks_flat
-    selected_points_cam = points_cam_flat[valid_mask]
-    selected_colors = colors_flat[valid_mask]
+            # ✅ 转为世界坐标
+            cam_point_h = np.concatenate([point_cam, [1.0]])
+            world_point = T_cam2world @ cam_point_h
+            points.append(world_point[:3])
 
-    # === 转到世界坐标系 ===
-    ones = np.ones((selected_points_cam.shape[0], 1), dtype=np.float32)
-    points_homo = np.hstack((selected_points_cam, ones))  # [N, 4]
-    points_world = (extrinsic @ points_homo.T).T[:, :3]  # [N, 3]
+            # ✅ 同步颜色
+            if rgb is not None:
+                r, g, b = rgb[v, u]
+                colors.append((r, g, b))
 
-    return points_world, selected_colors
-    
+    points = np.array(points, dtype=np.float32)
+    colors = np.array(colors, dtype=np.uint8)
+
+    return points, colors
+
 def save_transparent_image(rgb, mask, save_path):
     if rgb.shape[2] > 3:
         rgb = rgb[:, :, :3]

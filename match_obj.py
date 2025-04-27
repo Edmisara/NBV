@@ -6,7 +6,7 @@ import multiprocessing as mp
 import cv2
 
 # ==== 可调参数区 ====
-voxel_size = 0.03
+voxel_size = 0.05
 radius_normal = voxel_size * 2
 radius_feature = voxel_size * 5
 lambda_weight = 3.0
@@ -95,6 +95,21 @@ def match_worker(args):
         shape_score = 1 - np.linalg.norm(model_desc - query_desc) / np.sqrt(len(query_desc))
         shape_score = float(np.clip(shape_score, 0.0, 1.0))
 
+                # ====== 可视化匹配结果（仅在fitness高于0.9时显示）======
+        if fitness is not None and fitness > 0.9:
+            print(f"[可视化] {fname} 匹配fitness高，显示一下结果")
+            query_vis = o3d.geometry.PointCloud()
+            query_vis.points = o3d.utility.Vector3dVector(query_down_np)
+            query_vis.paint_uniform_color([1, 0, 0])  # 红色 - 查询
+
+            model_vis = o3d.geometry.PointCloud()
+            model_vis.points = o3d.utility.Vector3dVector(model_down_np)
+            model_vis.paint_uniform_color([0, 1, 0])  # 绿色 - 匹配
+
+            query_vis.transform(result_icp.transformation)
+
+            o3d.visualization.draw_geometries([query_vis, model_vis])
+            
         return fname, fitness, rmse, corr, shape_score
     except Exception as e:
         return fname, None, None, None, None
