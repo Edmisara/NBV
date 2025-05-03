@@ -1,4 +1,4 @@
-import blenderproc as bproc  # BlenderProc 必须为首行
+import blenderproc as bproc  # 必须为首行
 import bpy
 import random
 import numpy as np
@@ -14,7 +14,7 @@ num_points = 100000
 output_base = Path("D:/NBV/nbv_simulation/results/ReferenceCloud")
 output_base.mkdir(parents=True, exist_ok=True)
 
-# ✅ 先统一对所有 MESH 执行一次三角化（只做一次）
+# ✅ 三角化所有 MESH
 for obj in bpy.data.objects:
     if obj.type == 'MESH':
         bpy.context.view_layer.objects.active = obj
@@ -23,7 +23,7 @@ for obj in bpy.data.objects:
         bpy.ops.mesh.quads_convert_to_tris()
         bpy.ops.object.mode_set(mode='OBJECT')
 
-# ✅ 对每个对象采样并导出PLY
+# ✅ 采样并写PLY（带法线）
 for obj in bpy.data.objects:
     if obj.type != 'MESH':
         continue
@@ -34,11 +34,23 @@ for obj in bpy.data.objects:
     verts = mesh.vertices
 
     sampled_points = []
+    sampled_normals = []
+
+    face_data = []
+    face_areas = []
+
+    for f in faces:
+        v0, v1, v2 = [verts[i].co for i in f.vertices]
+        n0, n1, n2 = [verts[i].normal for i in f.vertices]
+        area = ((v1 - v0).cross(v2 - v0)).length / 2.0
+        face_data.append((v0, v1, v2, n0, n1, n2))
+        face_areas.append(area)
+
+    area_sum = sum(face_areas)
+    probabilities = [a / area_sum for a in face_areas]
 
     for _ in range(num_points):
-        face = random.choice(faces)
-        v0, v1, v2 = [verts[i].co for i in face.vertices]
-
+        v0, v1, v2, n0, n1, n2 = random.choices(face_data, weights=probabilities, k=1)[0]
         r1, r2 = random.random(), random.random()
         sqrt_r1 = np.sqrt(r1)
         u = 1 - sqrt_r1
@@ -46,20 +58,28 @@ for obj in bpy.data.objects:
         w = 1 - u - v
 
         point_local = u * v0 + v * v1 + w * v2
-        point_world = obj.matrix_world @ Vector(point_local)
-        sampled_points.append(point_world[:])
+        normal_local = u * n0 + v * n1 + w * n2
 
-    # 写出PLY文件
+        point_world = obj.matrix_world @ Vector(point_local)
+        normal_world = obj.matrix_world.to_3x3() @ Vector(normal_local)
+        normal_world.normalize()
+
+        sampled_points.append(point_world[:])
+        sampled_normals.append(normal_world[:])
+
     obj_safe_name = obj.name.replace(" ", "_").replace(".", "_")
     ply_path = output_base / f"{obj_safe_name}_reference_points.ply"
+
+    # === 写PLY（带法线）===
     with open(ply_path, "w") as f:
         f.write("ply\nformat ascii 1.0\n")
         f.write(f"element vertex {len(sampled_points)}\n")
         f.write("property float x\nproperty float y\nproperty float z\n")
+        f.write("property float nx\nproperty float ny\nproperty float nz\n")
         f.write("end_header\n")
-        for pt in sampled_points:
-            f.write(f"{pt[0]} {pt[1]} {pt[2]}\n")
+        for pt, n in zip(sampled_points, sampled_normals):
+            f.write(f"{pt[0]} {pt[1]} {pt[2]} {n[0]} {n[1]} {n[2]}\n")
 
     print(f"✅ 已完成导出: {ply_path}")
 
-print("🎉 所有对象的参考点云已采样并写入 PLY 文件！保存路径：", output_base)
+print("🎉 所有对象的带法线点云采样已完成并写入 PLY 文件！")
