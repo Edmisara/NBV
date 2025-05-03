@@ -51,12 +51,7 @@ for v in range(height):
         cam_point_h = np.concatenate([point_cam, [1.0]])
         world_point = T_cam2world @ cam_point_h
         points.append(world_point[:3])
-        # **反转Z轴**，使得它符合Blender的Z-up标准
-        #world_point[2] = -world_point[2]  # 反转Z轴
 
-        # **修正点云位置**，添加相机的偏移量（例如，原相机位置偏移）
-        ##camera_offset = np.array([-120.0, 120.0, 80.0])  # 相机原位置偏移
-        #world_point[:3] += camera_offset  # 修正点云位置
 
         if rgb_img is not None:
             r, g, b = rgb_img[v, u]
